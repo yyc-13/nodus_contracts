@@ -35,6 +35,7 @@ contract Nodus is Ownable {
 
     mapping(string => Content) public contents;
     mapping(string => Membership) public memberships;
+    mapping(address => bool) public registeredUsers;
 
     uint constant PROCESSING_FEE_PERCENT = 250;
 
@@ -42,86 +43,160 @@ contract Nodus is Ownable {
     event PurchaseMembership(string membershipId, address buyer);
     event Donation(string contentId, address donor, uint amount);
 
+    modifier onlyRegisteredUser() {
+        require(registeredUsers[msg.sender] == true, "Not a registered user");
+        _;
+    }
+
     constructor(address _usdcAddress, address _vaultAddress) {
         usdc = IERC20(_usdcAddress);
         vault = NodusVault(_vaultAddress);
     }
 
-    function createContent(string memory _id, uint _price) public {
+    function registerUser(address _user) external onlyOwner {
+        registeredUsers[_user] = true;
+    }
+
+    function createContent(
+        string memory _id,
+        uint _price
+    ) public onlyRegisteredUser {
+        require(
+            contents[_id].creator == address(0),
+            "Content ID already exists"
+        );
         contents[_id] = Content(_id, _price, payable(msg.sender));
     }
 
-    function createMembership(string memory _id, uint _price) public {
+    function createMembership(
+        string memory _id,
+        uint _price
+    ) public onlyRegisteredUser {
+        require(
+            memberships[_id].creator == address(0),
+            "Membership ID already exists"
+        );
         memberships[_id] = Membership(_id, _price, payable(msg.sender));
     }
 
-    function purchaseContent(string memory _id) public {
-        Content memory content = contents[_id];
-        uint price = content.price;
+    function updateContentPrice(
+        string memory _id,
+        uint _newPrice
+    ) public onlyRegisteredUser {
         require(
-            usdc.transferFrom(msg.sender, address(this), price),
-            "Not enough USDC provided."
+            contents[_id].creator == msg.sender,
+            "Only the content creator can update the price"
         );
+        contents[_id].price = _newPrice;
+    }
 
-        uint fee = (price * PROCESSING_FEE_PERCENT) / 10000;
-        uint amountToCreator = price - fee;
-
+    function updateMembershipPrice(
+        string memory _id,
+        uint _newPrice
+    ) public onlyRegisteredUser {
         require(
-            usdc.transfer(content.creator, amountToCreator),
-            "Transfer to creator failed."
+            memberships[_id].creator == msg.sender,
+            "Only the membership creator can update the price"
         );
-        require(
-            usdc.transfer(address(vault), fee),
-            "Transfer to vault failed."
-        );
+        memberships[_id].price = _newPrice;
+    }
 
+    function deleteContent(string memory _id) public onlyRegisteredUser {
+        require(
+            contents[_id].creator == msg.sender,
+            "Only the content creator can delete this content"
+        );
+        delete contents[_id];
+    }
+
+    function deleteMembership(string memory _id) public onlyRegisteredUser {
+        require(
+            memberships[_id].creator == msg.sender,
+            "Only the membership creator can delete this membership"
+        );
+        delete memberships[_id];
+    }
+
+    function purchaseContent(string memory _id) public onlyRegisteredUser {
+        require(
+            usdc.allowance(msg.sender, address(this)) >= contents[_id].price,
+            "Not enough USDC allowance"
+        );
+        _purchaseContent(_id);
+    }
+
+    function purchaseMembership(string memory _id) public onlyRegisteredUser {
+        require(
+            usdc.allowance(msg.sender, address(this)) >= memberships[_id].price,
+            "Not enough USDC allowance"
+        );
+        _purchaseMembership(_id);
+    }
+
+    function donateContent(
+        string memory _id,
+        uint _amount
+    ) public onlyRegisteredUser {
+        require(
+            usdc.allowance(msg.sender, address(this)) >= _amount,
+            "Not enough USDC allowance"
+        );
+        require(contents[_id].creator != address(0), "Content does not exist");
+        _donateContent(_id, _amount);
+    }
+
+    function _purchaseContent(string memory _id) private {
+        _purchase(_id, contents[_id].creator, contents[_id].price);
         emit PurchaseContent(_id, msg.sender);
     }
 
-    function purchaseMembership(string memory _id) public {
-        Membership memory membership = memberships[_id];
-        uint price = membership.price;
-        require(
-            usdc.transferFrom(msg.sender, address(this), price),
-            "Not enough USDC provided."
-        );
-
-        uint fee = (price * PROCESSING_FEE_PERCENT) / 10000;
-        uint amountToCreator = price - fee;
-
-        require(
-            usdc.transfer(membership.creator, amountToCreator),
-            "Transfer to creator failed."
-        );
-        require(
-            usdc.transfer(address(vault), fee),
-            "Transfer to vault failed."
-        );
-
+    function _purchaseMembership(string memory _id) private {
+        _purchase(_id, memberships[_id].creator, memberships[_id].price);
         emit PurchaseMembership(_id, msg.sender);
     }
 
-    function donateContent(string memory _id, uint _amount) public {
-        Content memory content = contents[_id];
+    function _purchase(
+        string memory _id,
+        address payable _recipient,
+        uint _price
+    ) private {
+        require(
+            usdc.transferFrom(msg.sender, address(this), _price),
+            "Not enough USDC provided"
+        );
 
-        // transfer the donation from the donor to the contract
+        uint fee = (_price * PROCESSING_FEE_PERCENT) / 10000;
+        uint amountToRecipient = _price - fee;
+
+        require(
+            usdc.transfer(_recipient, amountToRecipient),
+            "Transfer to recipient failed"
+        );
+        require(usdc.transfer(address(vault), fee), "Transfer to vault failed");
+    }
+
+    function _donateContent(string memory _id, uint _amount) private {
+        _donate(_id, contents[_id].creator, _amount);
+        emit Donation(_id, msg.sender, _amount);
+    }
+
+    function _donate(
+        string memory _id,
+        address payable _recipient,
+        uint _amount
+    ) private {
         require(
             usdc.transferFrom(msg.sender, address(this), _amount),
             "Transfer failed"
         );
 
-        // calculate the processing fee and the amount that goes to the creator
         uint fee = (_amount * PROCESSING_FEE_PERCENT) / 10000;
-        uint amountToCreator = _amount - fee;
+        uint amountToRecipient = _amount - fee;
 
-        // transfer the amount to the creator and the fee to the vault
         require(
-            usdc.transfer(content.creator, amountToCreator),
-            "Transfer to creator failed"
+            usdc.transfer(_recipient, amountToRecipient),
+            "Transfer to recipient failed"
         );
         require(usdc.transfer(address(vault), fee), "Transfer to vault failed");
-
-        // emit the Donation event
-        emit Donation(_id, msg.sender, _amount);
     }
 }

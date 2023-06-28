@@ -60,7 +60,7 @@ module.exports = {
   networks: {
     arbitrum: {
       provider: () => new HDWalletProvider(MNEMONIC, PROJECT_ID),
-      network_id: 421613, // Arbitrum network id
+      network_id: 421613, // Arbitrum goerli network id
       gas: 4500000,
       gasPrice: 0,
     },
